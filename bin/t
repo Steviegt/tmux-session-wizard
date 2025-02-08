@@ -37,46 +37,50 @@ if ! tmux info &>/dev/null; then
   TMP_SESSION_NAME=$(session_name --full-path "$TMP_SESSION_DIR")
   tmux new-session -d -s "$TMP_SESSION_NAME" -c "$TMP_SESSION_DIR"
 fi
-
 # Get or create session
 if [[ $RESULT == *":"* ]]; then
-  # RESULT comes from list-sessions or list-windows
   SESSION=$(echo "$RESULT" | awk '{print $1}')
   SESSION=${SESSION//:/}
   if [ "$SELECT_WINDOW" == "on" ]; then
     WINDOW=$(echo "$RESULT" | awk -F"[()]" '{print $(NF-1)}')
   fi
 else
-  # RESULT is a path
-
   DIR_FULL=$(echo "$RESULT" | sed -e "$TILDE_REPLACER")
-  DIR_WITH_TILDE=$(echo "$RESULT" | sed -e "$HOME_REPLACER") # in case it came from a direct usage of `t <path>`
-
-  # Quit if directory does not exists
+  DIR_WITH_TILDE=$(echo "$RESULT" | sed -e "$HOME_REPLACER")
   if [ ! -d "$DIR_FULL" ]; then
     exit 0
   fi
-
-  # Promote rank in zoxide.
   zoxide add "$DIR_FULL"
-
   MODE=$(get_tmux_option "@session-wizard-mode" "directory")
   SESSION=$(session_name --"$MODE" "$DIR_WITH_TILDE")
-
-  if ! tmux has-session -t="$SESSION" 2>/dev/null; then
-    tmux new-session -d -s "$SESSION" -c "$DIR_FULL"
+  SESSION_NEW=false
+if ! tmux has-session -t="$SESSION" 2>/dev/null; then
+  SESSION_NEW=true
+    WINDOW_CONFIG=$(get_tmux_option "@session-wizard-windows-config" "term:")
+    IFS=',' read -ra WINDOWS <<< "$WINDOW_CONFIG"
+    FIRST_WINDOW_NAME=$(echo "${WINDOWS[0]}" | cut -d':' -f1)
+    FIRST_WINDOW_CMD=$(echo "${WINDOWS[0]}" | cut -d':' -f2-)
+    tmux new-session -d -s "$SESSION" -c "$DIR_FULL" -n "$FIRST_WINDOW_NAME"
+    if [ -n "$FIRST_WINDOW_CMD" ]; then
+      tmux send-keys -t "$SESSION:$FIRST_WINDOW_NAME" "$FIRST_WINDOW_CMD" C-m
+    fi
+    unset WINDOWS[0]
+    for WINDOW in "${WINDOWS[@]}"; do
+      NAME=$(echo "$WINDOW" | cut -d':' -f1)
+      CMD=$(echo "$WINDOW" | cut -d':' -f2-)
+      tmux new-window -t "$SESSION" -c "$DIR_FULL" -n "$NAME"
+      if [ -n "$CMD" ]; then
+        tmux send-keys -t "$SESSION:$NAME" "$CMD" C-m
+      fi
+    done
   fi
 fi
 
-# Clean up tmp session
 if [[ -n "$TMP_SESSION_NAME" ]]; then
   tmux kill-session -t "$TMP_SESSION_NAME" 2>/dev/null
   rm -rf "$TMP_SESSION_DIR"
 fi
 
-# Attach to session
-# Escape tilde which if it appears by itself, tmux will interpret as a marked target
-# https://github.com/tmux/tmux/blob/master/cmd-find.c#L1024C51-L1024C57
 SESSION=$(echo "$SESSION" | sed 's/^~$/\\~/')
 if [ -z "$TMUX" ]; then
   tmux attach -t "$SESSION"
@@ -84,6 +88,9 @@ else
   tmux switch-client -t "$SESSION"
 fi
 
+if [ "$SESSION_NEW" = true ]; then
+  tmux select-window -t "$SESSION:1"
+fi
 if [ -n "$WINDOW" ]; then
   tmux select-window -t "$SESSION:$WINDOW"
 fi
